@@ -1,87 +1,102 @@
-'use strict'
+/**
+ * Implement Gatsby's Node APIs in this file.
+ *
+ * See: https://www.gatsbyjs.org/docs/node-apis/
+ */
 
-const path = require('path')
+const path = require('path');
+const _ = require('lodash');
 
-exports.onCreateNode = ({ node, actions, getNode }) => {
-  const { createNodeField } = actions
+exports.createPages = async ({ actions, graphql, reporter }) => {
+  const { createPage } = actions;
+  const postTemplate = path.resolve(`src/templates/post.js`);
+  const tagTemplate = path.resolve('src/templates/tag.js');
 
-  // Sometimes, optional fields tend to get not picked up by the GraphQL
-  // interpreter if not a single content uses it. Therefore, we're putting them
-  // through `createNodeField` so that the fields still exist and GraphQL won't
-  // trip up. An empty string is still required in replacement to `null`.
-
-  switch (node.internal.type) {
-    case 'MarkdownRemark': {
-      const { slug, layout, category } = node.frontmatter
-      const { relativePath } = getNode(node.parent)
-
-      let slugUse = slug
-
-      if (!slugUse) {
-        slugUse = `/${relativePath.replace('.md', '')}/`
-      } else {
-        slugUse = `/${category}/${slug}/`
-      }
-
-      // Used to generate URL to view this content.
-      createNodeField({
-        node,
-        name: 'slug',
-        value: slugUse || '',
-      })
-
-      // Used to determine a page layout.
-      createNodeField({
-        node,
-        name: 'layout',
-        value: layout || '',
-      })
-    }
-  }
-}
-
-exports.createPages = async ({ graphql, actions }) => {
-  const { createPage } = actions
-
-  const allMarkdown = await graphql(`
+  const result = await graphql(`
     {
-      allMarkdownRemark(limit: 1000) {
+      postsRemark: allMarkdownRemark(
+        filter: { fileAbsolutePath: { regex: "/posts/" } }
+        sort: { order: DESC, fields: [frontmatter___date] }
+        limit: 1000
+      ) {
         edges {
           node {
-            fields {
-              layout
+            frontmatter {
               slug
             }
           }
         }
       }
+      tagsGroup: allMarkdownRemark(limit: 2000) {
+        group(field: frontmatter___tags) {
+          fieldValue
+        }
+      }
     }
-  `)
+  `);
 
-  if (allMarkdown.errors) {
-    console.error(allMarkdown.errors)
-    throw new Error(allMarkdown.errors)
+  // Handle errors
+  if (result.errors) {
+    reporter.panicOnBuild(`Error while running GraphQL query.`);
+    return;
   }
 
-  allMarkdown.data.allMarkdownRemark.edges.forEach(({ node }) => {
-    const { slug, layout } = node.fields
+  // Create post detail pages
+  const posts = result.data.postsRemark.edges;
 
+  posts.forEach(({ node }) => {
     createPage({
-      path: slug,
-      // This will automatically resolve the template to a corresponding
-      // `layout` frontmatter in the Markdown.
-      //
-      // Feel free to set any `layout` as you'd like in the frontmatter, as
-      // long as the corresponding template file exists in src/templates.
-      // If no template is set, it will fall back to the default `page`
-      // template.
-      //
-      // Note that the template has to exist first, or else the build will fail.
-      component: path.resolve(`./src/templates/${layout || 'page'}.tsx`),
+      path: node.frontmatter.slug,
+      component: postTemplate,
+      context: {},
+    });
+  });
+
+  // Extract tag data from query
+  const tags = result.data.tagsGroup.group;
+  // Make tag pages
+  tags.forEach(tag => {
+    createPage({
+      path: `/pensieve/tags/${_.kebabCase(tag.fieldValue)}/`,
+      component: tagTemplate,
       context: {
-        // Data passed to context is available in page queries as GraphQL variables.
-        slug,
+        tag: tag.fieldValue,
       },
-    })
-  })
-}
+    });
+  });
+};
+
+// https://www.gatsbyjs.org/docs/node-apis/#onCreateWebpackConfig
+exports.onCreateWebpackConfig = ({ stage, loaders, actions }) => {
+  // https://www.gatsbyjs.org/docs/debugging-html-builds/#fixing-third-party-modules
+  if (stage === 'build-html') {
+    actions.setWebpackConfig({
+      module: {
+        rules: [
+          {
+            test: /scrollreveal/,
+            use: loaders.null(),
+          },
+          {
+            test: /animejs/,
+            use: loaders.null(),
+          },
+        ],
+      },
+    });
+  }
+
+  actions.setWebpackConfig({
+    resolve: {
+      alias: {
+        '@components': path.resolve(__dirname, 'src/components'),
+        '@config': path.resolve(__dirname, 'src/config'),
+        '@fonts': path.resolve(__dirname, 'src/fonts'),
+        '@images': path.resolve(__dirname, 'src/images'),
+        '@pages': path.resolve(__dirname, 'src/pages'),
+        '@styles': path.resolve(__dirname, 'src/styles'),
+        '@utils': path.resolve(__dirname, 'src/utils'),
+      },
+    },
+  });
+};
